@@ -1,4 +1,3 @@
-
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -16,14 +15,19 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
   const channelRef = useRef<any>(null);
   const pendingCandidates = useRef<{ [participantId: string]: RTCIceCandidate[] }>({});
 
-  // Enhanced STUN/TURN servers for better connectivity
   const rtcConfiguration = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
       { urls: 'stun:stun.services.mozilla.com' },
-      { urls: 'stun:global.stun.twilio.com:3478' }
+      { urls: 'stun:global.stun.twilio.com:3478' },
+      // Add TURN servers for better NAT traversal (replace with your credentials)
+      {
+        urls: 'turn:your-turn-server.com:3478',
+        username: 'your-username',
+        credential: 'your-credential'
+      }
     ],
     iceCandidatePoolSize: 10
   };
@@ -33,7 +37,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
     
     const pc = new RTCPeerConnection(rtcConfiguration);
     
-    // Add local stream tracks to peer connection if available
     if (localStream) {
       console.log('Adding local stream tracks to peer connection for:', participantId);
       localStream.getTracks().forEach(track => {
@@ -42,7 +45,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       });
     }
 
-    // Handle incoming remote stream
     pc.ontrack = (event) => {
       console.log('Received remote stream from:', participantId, 'streams:', event.streams.length);
       const [remoteStream] = event.streams;
@@ -55,7 +57,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       }
     };
 
-    // Handle ICE candidates
     pc.onicecandidate = (event) => {
       if (event.candidate && channelRef.current) {
         console.log('Sending ICE candidate to:', participantId);
@@ -71,7 +72,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       }
     };
 
-    // Connection state monitoring
     pc.onconnectionstatechange = () => {
       console.log(`Connection state with ${participantId}:`, pc.connectionState);
       if (pc.connectionState === 'failed') {
@@ -90,6 +90,30 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       console.log(`ICE connection state with ${participantId}:`, pc.iceConnectionState);
     };
 
+    pc.onnegotiationneeded = async () => {
+      try {
+        console.log('Negotiation needed for:', participantId);
+        if (pc.signalingState === 'stable') {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          
+          if (channelRef.current) {
+            channelRef.current.send({
+              type: 'broadcast',
+              event: 'offer',
+              payload: {
+                offer,
+                targetParticipant: participantId,
+                fromParticipant: currentParticipantId
+              }
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error during negotiation:', error);
+      }
+    };
+
     peerConnections.current[participantId] = pc;
     pendingCandidates.current[participantId] = [];
     return pc;
@@ -101,10 +125,9 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
     const pc = peerConnections.current[fromParticipant] || createPeerConnection(fromParticipant);
     
     try {
-      await pc.setRemoteDescription(offer);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
       console.log('Set remote description for offer from:', fromParticipant);
       
-      // Process any pending ICE candidates
       if (pendingCandidates.current[fromParticipant]) {
         for (const candidate of pendingCandidates.current[fromParticipant]) {
           try {
@@ -121,7 +144,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       await pc.setLocalDescription(answer);
       console.log('Created and set local answer for:', fromParticipant);
 
-      // Send answer through Supabase realtime
       if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
@@ -144,10 +166,9 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
     const pc = peerConnections.current[fromParticipant];
     if (pc) {
       try {
-        await pc.setRemoteDescription(answer);
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
         console.log('Set remote description for answer from:', fromParticipant);
         
-        // Process any pending ICE candidates
         if (pendingCandidates.current[fromParticipant]) {
           for (const candidate of pendingCandidates.current[fromParticipant]) {
             try {
@@ -163,7 +184,7 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
         console.error('Error handling answer from:', fromParticipant, error);
       }
     }
-  }, []);
+  }, [peerConnections]);
 
   const handleIceCandidate = useCallback(async (candidate: RTCIceCandidate, fromParticipant: string) => {
     console.log('Handling ICE candidate from:', fromParticipant);
@@ -183,7 +204,7 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       }
       pendingCandidates.current[fromParticipant].push(candidate);
     }
-  }, []);
+  }, [peerConnections]);
 
   const initiateCall = useCallback(async (targetParticipant: string) => {
     console.log('Initiating call to:', targetParticipant);
@@ -198,7 +219,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       await pc.setLocalDescription(offer);
       console.log('Created and set local offer for:', targetParticipant);
 
-      // Send offer through Supabase realtime
       if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
@@ -215,19 +235,16 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
     }
   }, [createPeerConnection, currentParticipantId]);
 
-  // Set up WebRTC signaling
   useEffect(() => {
     if (!currentParticipantId || !meetingId) return;
 
     console.log('Setting up WebRTC for meeting:', meetingId, 'participant:', currentParticipantId);
 
-    // Clean up existing channel
     if (channelRef.current) {
       supabase.removeChannel(channelRef.current);
       channelRef.current = null;
     }
 
-    // Set up Supabase realtime channel for signaling
     channelRef.current = supabase
       .channel(`webrtc-${meetingId}`)
       .on('broadcast', { event: 'offer' }, ({ payload }) => {
@@ -251,7 +268,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       .on('broadcast', { event: 'participant-joined' }, ({ payload }) => {
         console.log('Participant joined event:', payload);
         if (payload.participantId !== currentParticipantId) {
-          // Initiate call to newly joined participant after a delay
           setTimeout(() => {
             console.log('Initiating call to newly joined participant:', payload.participantId);
             initiateCall(payload.participantId);
@@ -261,7 +277,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       .on('broadcast', { event: 'participant-left' }, ({ payload }) => {
         console.log('Participant left event:', payload);
         if (payload.participantId !== currentParticipantId) {
-          // Clean up peer connection for left participant
           const pc = peerConnections.current[payload.participantId];
           if (pc) {
             pc.close();
@@ -277,7 +292,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
       .subscribe((status) => {
         console.log('WebRTC channel subscription status:', status);
         if (status === 'SUBSCRIBED') {
-          // Announce that we've joined after a delay to ensure proper setup
           setTimeout(() => {
             console.log('Announcing participant joined');
             channelRef.current?.send({
@@ -294,7 +308,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
     return () => {
       console.log('Cleaning up WebRTC connections');
       
-      // Announce leaving
       if (channelRef.current) {
         channelRef.current.send({
           type: 'broadcast',
@@ -307,7 +320,6 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
         channelRef.current = null;
       }
 
-      // Close all peer connections
       Object.values(peerConnections.current).forEach(pc => {
         pc.close();
       });
@@ -317,32 +329,27 @@ export function useWebRTC(meetingId: string, currentParticipantId: string | null
     };
   }, [meetingId, currentParticipantId, handleOffer, handleAnswer, handleIceCandidate, initiateCall]);
 
-  // Update peer connections when local stream changes
   useEffect(() => {
     console.log('Local stream changed:', !!localStream);
     
-    if (localStream) {
-      Object.entries(peerConnections.current).forEach(([participantId, pc]) => {
-        console.log('Updating peer connection for:', participantId);
-        
-        // Get current senders
-        const senders = pc.getSenders();
-        
-        // Remove old tracks
-        senders.forEach(sender => {
-          if (sender.track) {
-            console.log('Removing old track:', sender.track.kind);
-            pc.removeTrack(sender);
-          }
-        });
+    Object.entries(peerConnections.current).forEach(([participantId, pc]) => {
+      console.log('Updating peer connection for:', participantId);
+      
+      const senders = pc.getSenders();
+      senders.forEach(sender => {
+        if (sender.track) {
+          console.log('Removing old track:', sender.track.kind);
+          pc.removeTrack(sender);
+        }
+      });
 
-        // Add new tracks
+      if (localStream) {
         localStream.getTracks().forEach(track => {
           console.log('Adding new track:', track.kind, 'enabled:', track.enabled);
           pc.addTrack(track, localStream);
         });
-      });
-    }
+      }
+    });
   }, [localStream]);
 
   return {

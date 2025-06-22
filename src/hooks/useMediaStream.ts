@@ -1,4 +1,3 @@
-
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 export function useMediaStream() {
@@ -38,6 +37,12 @@ export function useMediaStream() {
       setError(null);
       console.log('Requesting media permissions...');
       
+      // Clean up existing streams first
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
@@ -58,7 +63,6 @@ export function useMediaStream() {
       setIsVideoOn(true);
       setIsAudioOn(true);
       
-      // Ensure tracks are enabled by default
       mediaStream.getVideoTracks().forEach(track => {
         track.enabled = true;
         console.log('Video track enabled:', track.label);
@@ -75,20 +79,19 @@ export function useMediaStream() {
       
       if (error.name === 'NotAllowedError') {
         setError('Camera and microphone access denied. Please allow permissions and try again.');
-        setHasPermissions(false);
       } else if (error.name === 'NotFoundError') {
         setError('No camera or microphone found. Please check your devices.');
-        setHasPermissions(false);
       } else if (error.name === 'NotReadableError') {
         setError('Camera or microphone is already in use by another application.');
-        setHasPermissions(false);
       } else {
         setError('Failed to access camera and microphone. Please try again.');
-        setHasPermissions(false);
       }
       
+      setHasPermissions(false);
       setIsVideoOn(false);
       setIsAudioOn(false);
+      setStream(null);
+      streamRef.current = null;
       throw error;
     }
   }, []);
@@ -99,7 +102,7 @@ export function useMediaStream() {
     const setupMedia = async () => {
       try {
         const hasPerms = await checkPermissions();
-        if (hasPerms) {
+        if (hasPerms && mounted) {
           await initializeMedia();
         }
       } catch (error) {
@@ -112,77 +115,72 @@ export function useMediaStream() {
     return () => {
       mounted = false;
       console.log('Cleaning up media streams...');
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => {
-          console.log('Stopping track on cleanup:', track.kind, track.label);
-          track.stop();
-        });
-        streamRef.current = null;
-      }
-      if (screenStreamRef.current) {
-        screenStreamRef.current.getTracks().forEach(track => {
-          console.log('Stopping screen track on cleanup:', track.kind, track.label);
-          track.stop();
-        });
-        screenStreamRef.current = null;
-      }
+      stopAllTracks();
     };
   }, [initializeMedia, checkPermissions]);
 
   const toggleVideo = useCallback(async () => {
     console.log('Toggling video, current state:', isVideoOn);
     
-    if (!streamRef.current) {
-      // Need to initialize stream first
+    if (!isVideoOn) {
+      // Turn camera on - request a new stream
       try {
-        await initializeMedia();
-        return;
+        const newStream = await initializeMedia();
+        if (newStream) {
+          newStream.getVideoTracks().forEach(track => {
+            track.enabled = true;
+            console.log('New video track enabled:', track.label);
+          });
+          setIsVideoOn(true);
+          setStream(newStream);
+        }
       } catch (error) {
         console.error('Failed to initialize video:', error);
-        return;
+        setError('Failed to turn on camera. Please try again.');
       }
-    }
-
-    if (streamRef.current) {
-      const videoTracks = streamRef.current.getVideoTracks();
-      const newVideoState = !isVideoOn;
-      
-      videoTracks.forEach(track => {
-        track.enabled = newVideoState;
-        console.log('Video track toggled:', track.enabled, track.label);
-      });
-      
-      setIsVideoOn(newVideoState);
-      
-      // Trigger re-render by updating stream reference
-      setStream(streamRef.current);
+    } else {
+      // Turn camera off - stop tracks but keep stream reference
+      if (streamRef.current) {
+        streamRef.current.getVideoTracks().forEach(track => {
+          track.enabled = false;
+          track.stop(); // Stop the track to turn off camera light
+          console.log('Video track stopped:', track.label);
+        });
+        setIsVideoOn(false);
+        setStream(new MediaStream(streamRef.current.getAudioTracks())); // Keep audio tracks
+      }
     }
   }, [isVideoOn, initializeMedia]);
 
   const toggleAudio = useCallback(async () => {
     console.log('Toggling audio, current state:', isAudioOn);
     
-    if (!streamRef.current) {
-      // Need to initialize stream first
-      try {
-        await initializeMedia();
-        return;
-      } catch (error) {
-        console.error('Failed to initialize audio:', error);
-        return;
+    if (!isAudioOn) {
+      if (!streamRef.current) {
+        try {
+          await initializeMedia();
+          return;
+        } catch (error) {
+          console.error('Failed to initialize audio:', error);
+          return;
+        }
       }
-    }
-    
-    if (streamRef.current) {
       const audioTracks = streamRef.current.getAudioTracks();
-      const newAudioState = !isAudioOn;
-      
       audioTracks.forEach(track => {
-        track.enabled = newAudioState;
-        console.log('Audio track toggled:', track.enabled, track.label);
+        track.enabled = true;
+        console.log('Audio track enabled:', track.label);
       });
-      
-      setIsAudioOn(newAudioState);
+      setIsAudioOn(true);
+      setStream(streamRef.current);
+    } else {
+      if (streamRef.current) {
+        streamRef.current.getAudioTracks().forEach(track => {
+          track.enabled = false;
+          console.log('Audio track disabled:', track.label);
+        });
+        setIsAudioOn(false);
+        setStream(streamRef.current);
+      }
     }
   }, [isAudioOn, initializeMedia]);
 
@@ -203,20 +201,22 @@ export function useMediaStream() {
         audio: true
       });
 
-      // Store screen stream
       screenStreamRef.current = screenStream;
-      
-      // Replace video track with screen share
       setStream(screenStream);
       setIsScreenSharing(true);
 
       console.log('Screen sharing started');
 
-      // Listen for screen share end
       screenStream.getVideoTracks()[0].addEventListener('ended', () => {
         console.log('Screen share ended by user');
         stopScreenShare();
       });
+
+      // Stop camera stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
     } catch (error) {
       console.error('Error starting screen share:', error);
       setError('Failed to start screen sharing. Please try again.');
@@ -227,30 +227,28 @@ export function useMediaStream() {
     console.log('Stopping screen share...');
     
     if (screenStreamRef.current) {
-      screenStreamRef.current.getTracks().forEach(track => {
-        track.stop();
-      });
+      screenStreamRef.current.getTracks().forEach(track => track.stop());
       screenStreamRef.current = null;
     }
 
-    // Restart camera stream
-    try {
-      const newStream = await initializeMedia();
-      setIsScreenSharing(false);
-      
-      // Apply current settings
-      if (newStream) {
-        newStream.getVideoTracks().forEach(track => {
-          track.enabled = isVideoOn;
-        });
-        
-        newStream.getAudioTracks().forEach(track => {
-          track.enabled = isAudioOn;
-        });
+    setIsScreenSharing(false);
+    setStream(null);
+
+    // Restart camera stream if video was on
+    if (isVideoOn) {
+      try {
+        const newStream = await initializeMedia();
+        if (newStream) {
+          newStream.getVideoTracks().forEach(track => {
+            track.enabled = true;
+          });
+          newStream.getAudioTracks().forEach(track => {
+            track.enabled = isAudioOn;
+          });
+        }
+      } catch (error) {
+        console.error('Error restarting camera:', error);
       }
-    } catch (error) {
-      console.error('Error restarting camera:', error);
-      setIsScreenSharing(false);
     }
   }, [isVideoOn, isAudioOn, initializeMedia]);
 

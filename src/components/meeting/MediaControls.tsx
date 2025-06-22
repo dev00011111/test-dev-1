@@ -1,4 +1,3 @@
-
 import { useRef, useEffect, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -31,11 +30,10 @@ const MediaControls = ({
     console.log('MediaControls effect - stream:', !!stream, 'isVideoOn:', isVideoOn);
     
     if (videoRef.current) {
-      if (stream && isVideoOn) {
+      if (stream && isVideoOn && stream.getVideoTracks().length > 0) {
         console.log('Setting video stream');
         videoRef.current.srcObject = stream;
         
-        // Ensure video plays and is muted for self-view
         videoRef.current.muted = true;
         videoRef.current.playsInline = true;
         
@@ -51,9 +49,7 @@ const MediaControls = ({
         }
       } else {
         console.log('Clearing video stream');
-        if (videoRef.current.srcObject) {
-          videoRef.current.srcObject = null;
-        }
+        videoRef.current.srcObject = null;
       }
     }
   }, [stream, isVideoOn]);
@@ -104,7 +100,7 @@ const MediaControls = ({
       )}
       
       <Card className="aspect-video relative overflow-hidden bg-gray-900 w-full">
-        {stream && isVideoOn ? (
+        {stream && isVideoOn && stream.getVideoTracks().length > 0 ? (
           <video
             ref={videoRef}
             autoPlay
@@ -142,7 +138,6 @@ const MediaControls = ({
             size="sm"
             variant={isVideoOn ? "default" : "destructive"}
             onClick={handleToggleVideo}
-            disabled={!!error && !stream}
           >
             {isVideoOn ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
           </Button>
@@ -151,7 +146,6 @@ const MediaControls = ({
             size="sm"
             variant={isAudioOn ? "default" : "destructive"}
             onClick={handleToggleAudio}
-            disabled={!!error && !stream}
           >
             {isAudioOn ? <Mic className="h-4 w-4" /> : <MicOff className="h-4 w-4" />}
           </Button>
